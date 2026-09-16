@@ -1,9 +1,9 @@
 --extra-index-url https://download.pytorch.org/whl/cu126
 
-torch>=2.11.0
+torch==2.13.0
 torchmetrics==1.8.2
-triton-windows
-torchvision
+triton-windows==3.7.1.post27
+torchvision==0.28
 matplotlib
 einops
 fvcore
