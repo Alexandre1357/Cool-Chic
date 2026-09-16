@@ -349,6 +349,9 @@ def get_preset_from_args(args: argparse.Namespace) -> Dict[str, Any]:
     if args.tune == "mse":
         dist_weight = {"mse": 1.0}
 
+    elif args.tune == "l1":
+        dist_weight = {"mse": 0.0, "l1": 1.0}
+
     elif args.tune == "wasserstein":
         if args.input.endswith(".yuv"):
             raise argparse.ArgumentTypeError(
@@ -358,6 +361,24 @@ def get_preset_from_args(args: argparse.Namespace) -> Dict[str, Any]:
         # Value determined empirically, see
         # "Perceptually optimised Cool-chic for CLIC 2025", Philippe et al.
         dist_weight = {"mse": 0.2, "wasserstein": 0.8 / 200}
+
+    elif args.tune == "brdf07_mod_mse":
+        dist_weight = {"mse": 0.3, "brdf_mod_mse": 0.7}
+
+    elif args.tune == "brdf09_mod_mse":
+        dist_weight = {"mse": 0.1, "brdf_mod_mse": 0.9}
+
+    elif args.tune == "brdf07_l1":
+        dist_weight = {"mse": 0.3, "brdf_l1": 0.7}
+
+    elif args.tune == "brdf09_l1":
+        dist_weight = {"mse": 0.1, "brdf_l1": 0.9}
+
+    elif args.tune == "brdf07_l1_lpips":
+        dist_weight = {"mse": 0.3, "brdf_l1_lpips": 0.7}
+
+    elif args.tune == "brdf07_rel_mse":
+        dist_weight = {"mse": 0.3, "brdf_rel_mse": 0.7}
 
     else:
         raise argparse.ArgumentTypeError(f"Unknown --tune. Found {args.tune}")

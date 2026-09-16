@@ -329,7 +329,7 @@ class PresetIntra(Preset):
 
         # ---- Create the 2 warm-up stages, with wu_n_cand initial candidates
         wu_n_stage = 2
-        wu_n_cand = 5
+        wu_n_cand = 10
 
         wu_n_iter = 400  # default when plenty of iterations
         if self.itr_main_training < 4000:

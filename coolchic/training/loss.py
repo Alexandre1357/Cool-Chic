@@ -6,19 +6,21 @@
 #
 # Authors: see CONTRIBUTORS.md
 
-
 import typing
 from dataclasses import dataclass, field
 from typing import Dict, Literal, Optional, Union
 
 import torch
 from torch import Tensor
+from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 
 from coolchic.io.format.yuv import DictTensorYUV
+from coolchic.training.metrics import brdf
 from coolchic.training.metrics.mse import dist_to_db, mse_fn
 from coolchic.training.metrics.wasserstein import wasserstein_fn
+from coolchic.utils import color, hammersley
 
-DISTORTION_METRIC = Literal["mse", "wasserstein"]
+DISTORTION_METRIC = Literal["mse", "l1", "wasserstein", "brdf07_mod_mse", "brdf09_mod_mse", "brdf07_l1", "brdf09_l1", "brdf07_l1_lpips", "brdf07_rel_mse"]
 
 
 @dataclass(kw_only=True)
@@ -134,6 +136,12 @@ def _compute_mse(x: Union[Tensor, DictTensorYUV], y: Union[Tensor, DictTensorYUV
         mse = mse / total_pixels_yuv
         return mse
 
+def _compute_l1(decoded_textures: Tensor, target_textures: Tensor) -> Tensor:
+    if type(decoded_textures) != Tensor or type(target_textures) != Tensor:
+        raise ValueError(f"Expected decoded_textures and target_textures to be Tensors but got types {type(decoded_textures)} and {type(target_textures)} respectively.") 
+
+    return (decoded_textures - target_textures).abs().mean()
+
 
 def _compute_wasserstein(
     decoded_img: Union[Tensor, DictTensorYUV], target_img: Union[Tensor, DictTensorYUV]
@@ -170,6 +178,123 @@ def _compute_wasserstein(
             total_pixels_yuv += n_pixels_channel
         wd = wd / total_pixels_yuv
     return wd
+
+def _compute_brdf_mod_mse(decoded_textures: Tensor, target_textures: Tensor) -> Tensor:
+    if type(decoded_textures) != Tensor or type(target_textures) != Tensor:
+        raise ValueError(f"Expected decoded_textures and target_textures to be Tensors but got types {type(decoded_textures)} and {type(target_textures)} respectively.") 
+
+    if len(decoded_textures.shape) != 4 or decoded_textures.shape[1] != 7:
+        raise ValueError(f"Expected there to be 4 dimensions with 7 channels but got {len(decoded_textures.shape)} dimensions and {decoded_textures.shape[1]} channels.")
+
+    rand_samples = 4
+    B, _, _, _ = decoded_textures.shape
+
+    light_dir = hammersley.rand_sample_hemisphere_torch((rand_samples, B,), 256, device=decoded_textures.device).reshape(rand_samples, B, 3, 1, 1)
+    eye_dir = hammersley.rand_sample_hemisphere_torch((rand_samples, B,), 256, device=decoded_textures.device).reshape(rand_samples, B, 3, 1, 1)
+
+    decoded_diffuse, decoded_normals, decoded_rough, decoded_metal = brdf.organize_textures(decoded_textures)
+    target_diffuse, target_normals, target_rough, target_metal = brdf.organize_textures(target_textures)
+
+    decoded_diffuse = color.srgb_to_linear_torch(decoded_diffuse)
+    target_diffuse = color.srgb_to_linear_torch(target_diffuse)
+
+    half_vector = torch.nn.functional.normalize(light_dir + eye_dir, dim=2)
+
+    v_dot_h = torch.sum(eye_dir * half_vector, dim=2, keepdim=True)
+
+    n_dot_l_pred = torch.sum(decoded_normals.detach() * light_dir, dim=2, keepdim=True)
+    n_dot_l_target = torch.sum(target_normals.detach() * light_dir, dim=2, keepdim=True)
+
+    n_dot_v_pred = torch.sum(decoded_normals.detach() * eye_dir, dim=2, keepdim=True)
+    n_dot_v_target = torch.sum(target_normals.detach() * eye_dir, dim=2, keepdim=True)
+
+    n_dot_h_pred = torch.sum(decoded_normals.detach() * half_vector, dim=2, keepdim=True)
+    n_dot_h_target = torch.sum(target_normals.detach() * half_vector, dim=2, keepdim=True)
+
+    alpha_rough_pred = decoded_rough * decoded_rough
+    alpha_rough_target = target_rough * target_rough
+
+    metal_fresnel_pred = brdf.F_Shlick(decoded_diffuse, 1.0, torch.abs(v_dot_h))
+    metal_fresnel_target = brdf.F_Shlick(target_diffuse, 1.0, torch.abs(v_dot_h))
+
+    diffuse_brdf_pred = brdf.lambertian_brdf(decoded_diffuse)
+    diffuse_brdf_target = brdf.lambertian_brdf(target_diffuse)
+
+    v_ggx_pred = brdf.V_GGX_util(
+        torch.clamp(n_dot_l_pred, 0.0, 1.0), 
+        torch.clamp(n_dot_v_pred, 0.0, 1.0), 
+        torch.clamp(alpha_rough_pred, 1e-8),
+    )
+    v_ggx_target = brdf.V_GGX_util(
+        torch.clamp(n_dot_l_target, 0.0, 1.0), 
+        torch.clamp(n_dot_v_target, 0.0, 1.0), 
+        torch.clamp(alpha_rough_target, 1e-8),
+    )
+
+    d_ggx_pred = brdf.D_GGX_util(
+        torch.clamp(n_dot_h_pred, 0.0, 1.0),
+        torch.clamp(alpha_rough_pred, 0.0, 1e-8),
+    )
+    d_ggx_target = brdf.D_GGX_util(
+        torch.clamp(n_dot_h_target, 0.0, 1.0),
+        torch.clamp(alpha_rough_target, 0.0, 1e-8),
+    )
+
+    metal_fresnel_loss = (metal_fresnel_pred - metal_fresnel_target).square().mean()
+    diffuse_brdf_loss = (diffuse_brdf_pred - diffuse_brdf_target).square().mean()
+    v_ggx_loss = (v_ggx_pred - v_ggx_target).square().mean()
+    d_ggx_loss = (d_ggx_pred - d_ggx_target).square().mean()
+    metal_loss = (decoded_metal - target_metal).square().mean()
+    normal_loss = (decoded_normals - target_normals).square().mean()
+
+    return (diffuse_brdf_loss + v_ggx_loss + d_ggx_loss + metal_loss + normal_loss + metal_fresnel_loss) / 6
+
+def _compute_pbr_target_and_pred(decoded_textures: Tensor, target_textures: Tensor, num_samples = 1) -> Tensor:
+    if type(decoded_textures) != Tensor or type(target_textures) != Tensor:
+        raise ValueError(f"Expected decoded_textures and target_textures to be Tensors but got types {type(decoded_textures)} and {type(target_textures)} respectively.") 
+
+    if len(decoded_textures.shape) != 4 or decoded_textures.shape[1] != 7:
+        raise ValueError(f"Expected there to be 4 dimensions with 7 channels but got {len(decoded_textures.shape)} dimensions and {decoded_textures.shape[1]} channels.")
+
+    B, _, H, W = decoded_textures.shape
+
+    light_dir = hammersley.rand_sample_hemisphere_torch((num_samples, B,), 256, device=decoded_textures.device).reshape(num_samples, B, 3, 1, 1)
+    eye_dir = hammersley.rand_sample_hemisphere_torch((num_samples, B,), 256, device=decoded_textures.device).reshape(num_samples, B, 3, 1, 1)
+
+    decoded_diffuse, decoded_normals, decoded_rough, decoded_metal = brdf.organize_textures(decoded_textures)
+    target_diffuse, target_normals, target_rough, target_metal = brdf.organize_textures(target_textures)
+
+    decoded_pbr = brdf.calc_pbr(light_dir, eye_dir, decoded_diffuse, decoded_normals, decoded_rough, decoded_metal, channel_dim=2).reshape(num_samples*B, 3, H, W)
+    target_pbr = brdf.calc_pbr(light_dir, eye_dir, target_diffuse, target_normals, target_rough, target_metal, channel_dim=2).reshape(num_samples*B, 3, H, W)
+
+    return decoded_pbr, target_pbr
+
+def _compute_pbr_loss_relative_mse(decoded_textures: Tensor, target_textures: Tensor) -> Tensor:
+    decoded_pbr, target_pbr = _compute_pbr_target_and_pred(decoded_textures, target_textures)
+
+    se = (target_pbr - decoded_pbr).square()
+    denominator = decoded_pbr.detach().square() + 1e-8
+
+    relative_mse = (se / denominator).mean()
+
+    return relative_mse
+
+def _compute_pbr_loss_l1(decoded_textures: Tensor, target_textures: Tensor) -> Tensor:
+    decoded_pbr, target_pbr = _compute_pbr_target_and_pred(decoded_textures, target_textures)
+
+    return (decoded_pbr - target_pbr).abs().mean()
+
+def _compute_pbr_loss_l1_lpips(decoded_textures: Tensor, target_textures: Tensor) -> Tensor:
+    decoded_pbr, target_pbr = _compute_pbr_target_and_pred(decoded_textures, target_textures)
+    decoded_pbr = brdf.pbr_neutral_tone_mapping(decoded_pbr, 1)
+    target_pbr = brdf.pbr_neutral_tone_mapping(target_pbr, 1)
+
+    if decoded_textures.device != _compute_pbr_loss_l1_lpips.lpips.device:
+        _compute_pbr_loss_l1_lpips.lpips = _compute_pbr_loss_l1_lpips.lpips.to(device=decoded_textures.device)
+
+    _compute_pbr_loss_l1_lpips.lpips.reset()
+    return _compute_pbr_loss_l1_lpips.lpips(decoded_pbr, target_pbr) * 0.5 + (decoded_pbr - target_pbr).abs().mean()
+_compute_pbr_loss_l1_lpips.lpips = LearnedPerceptualImagePatchSimilarity(net_type="vgg", normalize=True)
 
 
 def loss_function(
@@ -240,8 +365,18 @@ def loss_function(
     for dist_name, dist_w in dist_weight.items():
         if dist_name == "mse":
             cur_dist = _compute_mse(decoded_image, target_image)
+        elif dist_name == "l1":
+            cur_dist = _compute_l1(decoded_image, target_image)
         elif dist_name == "wasserstein":
             cur_dist = _compute_wasserstein(decoded_image, target_image)
+        elif dist_name == "brdf_mod_mse":
+            cur_dist = _compute_brdf_mod_mse(decoded_image, target_image)
+        elif dist_name == "brdf_l1":
+            cur_dist = _compute_pbr_loss_l1(decoded_image, target_image)
+        elif dist_name == "brdf_l1_lpips":
+            cur_dist = _compute_pbr_loss_l1_lpips(decoded_image, target_image)
+        elif dist_name == "brdf_rel_mse":
+            cur_dist = _compute_pbr_loss_relative_mse(decoded_image, target_image)
         else:
             raise ValueError(
                 f"Unsupported distortion metrics. Found {dist_name}, available "

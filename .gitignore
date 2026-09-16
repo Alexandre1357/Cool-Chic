@@ -17,5 +17,5 @@ test/test-workdir/
 test/out/
 venv/
 workdir/
-workdir7ch/
+workdir7ch*/
 data/
