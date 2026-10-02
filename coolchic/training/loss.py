@@ -20,7 +20,7 @@ from coolchic.training.metrics.mse import dist_to_db, mse_fn
 from coolchic.training.metrics.wasserstein import wasserstein_fn
 from coolchic.utils import color, hammersley
 
-DISTORTION_METRIC = Literal["mse", "l1", "wasserstein", "brdf07_mod_mse", "brdf09_mod_mse", "brdf07_l1", "brdf09_l1", "brdf07_l1_lpips", "brdf07_rel_mse"]
+DISTORTION_METRIC = Literal["mse", "l1", "wasserstein", "brdf07_mod_mse", "brdf09_mod_mse", "brdf07_l1", "brdf09_l1", "brdf07_l1_lpips", "brdf07_rel_mse", "brdf07_l1_importance_sampling"]
 
 
 @dataclass(kw_only=True)
@@ -249,6 +249,84 @@ def _compute_brdf_mod_mse(decoded_textures: Tensor, target_textures: Tensor) -> 
 
     return (diffuse_brdf_loss + v_ggx_loss + d_ggx_loss + metal_loss + normal_loss + metal_fresnel_loss) / 6
 
+def _compute_pbr_target_and_pred_importance_sample(decoded_textures: Tensor, target_textures: Tensor, num_samples = 1) -> Tensor:
+    if type(decoded_textures) != Tensor or type(target_textures) != Tensor:
+        raise ValueError(f"Expected decoded_textures and target_textures to be Tensors but got types {type(decoded_textures)} and {type(target_textures)} respectively.") 
+
+    if len(decoded_textures.shape) != 4 or decoded_textures.shape[1] != 7:
+        raise ValueError(f"Expected there to be 4 dimensions with 7 channels but got {len(decoded_textures.shape)} dimensions and {decoded_textures.shape[1]} channels.")
+
+    hammersley_N = 256
+
+    B, _, H, W = decoded_textures.shape
+
+    (decoded_diffuse, decoded_normals, decoded_rough, decoded_metal) = (
+        tensor.permute(0, 2, 3, 1).unsqueeze(0) for tensor in brdf.organize_textures(decoded_textures)
+    )
+    (target_diffuse, target_normals, target_rough, target_metal) = (
+        tensor.permute(0, 2, 3, 1).unsqueeze(0) for tensor in brdf.organize_textures(target_textures)
+    )
+
+    dir_shape = (num_samples, B, 1, 1)
+    eye_dir = hammersley.rand_sample_hemisphere_torch(dir_shape, hammersley_N, device=decoded_textures.device)
+
+    tangent_to_world_target = brdf.build_orhtonormal_basis(target_normals.detach())
+    world_to_tangent_target = torch.transpose(tangent_to_world_target, -1, -2)
+
+    target_tangent_eye_dir = torch.matmul(
+        world_to_tangent_target,
+        eye_dir.unsqueeze(-1),
+    ).squeeze(-1)
+
+    rand_indices = torch.rand(
+        (dir_shape + (1,)), device=decoded_textures.device
+    )
+    rand_indices = torch.floor(rand_indices * hammersley_N)
+
+    u, v = hammersley.hammersley2d_torch(
+        rand_indices, hammersley_N
+    )
+
+    target_specular_lobe_tangent_half_vector = brdf.sample_specular_ggx_vndf(
+        target_tangent_eye_dir, target_rough * target_rough, u, v
+    )
+    target_specular_lobe_tangent_light_dir = brdf.reflect_vector(
+        -target_tangent_eye_dir, target_specular_lobe_tangent_half_vector
+    )
+
+    target_diffuse_lobe_tangent_light_dir = torch.stack(
+        hammersley.sample_hemisphere_torch(
+            u.squeeze(-1), v.squeeze(-1), uniform=False
+        ),
+        dim=-1,
+    )
+
+    target_tangent_light_dir = torch.where(
+        torch.rand(dir_shape + (1,), device=decoded_textures.device) < 0.5,
+        target_diffuse_lobe_tangent_light_dir,
+        target_specular_lobe_tangent_light_dir,
+    )
+
+    target_tangent_half_vector = torch.nn.functional.normalize(
+        target_tangent_light_dir + target_tangent_eye_dir, dim=-1
+    )
+
+    pdf = 0.5 * brdf.specular_ggx_vndf_pdf(
+        torch.pow(target_rough.detach(), 2),
+        target_tangent_eye_dir,
+        target_tangent_half_vector,
+    ) + 0.5 * brdf.diffuse_pdf(target_tangent_light_dir[..., [2]])
+
+    light_dir = torch.matmul(
+        tangent_to_world_target,
+        target_tangent_light_dir.unsqueeze(-1),
+    ).squeeze(-1)
+
+    decoded_pbr = brdf.calc_pbr(light_dir, eye_dir, decoded_diffuse, decoded_rough, decoded_metal, decoded_normals, apply_shading=True, pdf=pdf).reshape(num_samples*B, H, W, 3).permute(0, 3, 1, 2)
+    target_pbr = brdf.calc_pbr(light_dir, eye_dir, target_diffuse, target_rough, target_metal, target_normals, apply_shading=True, pdf=pdf).reshape(num_samples*B, H, W, 3).permute(0, 3, 1, 2)
+
+    return decoded_pbr, target_pbr
+
 def _compute_pbr_target_and_pred(decoded_textures: Tensor, target_textures: Tensor, num_samples = 1) -> Tensor:
     if type(decoded_textures) != Tensor or type(target_textures) != Tensor:
         raise ValueError(f"Expected decoded_textures and target_textures to be Tensors but got types {type(decoded_textures)} and {type(target_textures)} respectively.") 
@@ -258,14 +336,21 @@ def _compute_pbr_target_and_pred(decoded_textures: Tensor, target_textures: Tens
 
     B, _, H, W = decoded_textures.shape
 
-    light_dir = hammersley.rand_sample_hemisphere_torch((num_samples, B,), 256, device=decoded_textures.device).reshape(num_samples, B, 3, 1, 1)
-    eye_dir = hammersley.rand_sample_hemisphere_torch((num_samples, B,), 256, device=decoded_textures.device).reshape(num_samples, B, 3, 1, 1)
+    hammersley_N = 256
 
-    decoded_diffuse, decoded_normals, decoded_rough, decoded_metal = brdf.organize_textures(decoded_textures)
-    target_diffuse, target_normals, target_rough, target_metal = brdf.organize_textures(target_textures)
+    dir_shape = (num_samples, B, 1, 1)
+    light_dir = hammersley.rand_sample_hemisphere_torch(dir_shape, hammersley_N, device=decoded_textures.device)
+    eye_dir = hammersley.rand_sample_hemisphere_torch(dir_shape, hammersley_N, device=decoded_textures.device)
 
-    decoded_pbr = brdf.calc_pbr(light_dir, eye_dir, decoded_diffuse, decoded_normals, decoded_rough, decoded_metal, channel_dim=2).reshape(num_samples*B, 3, H, W)
-    target_pbr = brdf.calc_pbr(light_dir, eye_dir, target_diffuse, target_normals, target_rough, target_metal, channel_dim=2).reshape(num_samples*B, 3, H, W)
+    (decoded_diffuse, decoded_normals, decoded_rough, decoded_metal) = (
+        tensor.permute(0, 2, 3, 1).unsqueeze(0) for tensor in brdf.organize_textures(decoded_textures)
+    )
+    (target_diffuse, target_normals, target_rough, target_metal) = (
+        tensor.permute(0, 2, 3, 1).unsqueeze(0) for tensor in brdf.organize_textures(target_textures)
+    )
+
+    decoded_pbr = brdf.calc_pbr(light_dir, eye_dir, decoded_diffuse, decoded_rough, decoded_metal, decoded_normals).reshape(num_samples*B, H, W, 3)
+    target_pbr = brdf.calc_pbr(light_dir, eye_dir, target_diffuse, target_rough, target_metal, target_normals).reshape(num_samples*B, H, W, 3)
 
     return decoded_pbr, target_pbr
 
@@ -279,21 +364,28 @@ def _compute_pbr_loss_relative_mse(decoded_textures: Tensor, target_textures: Te
 
     return relative_mse
 
+def _compute_pbr_loss_l1_importance_sampling(decoded_textures: Tensor, target_textures: Tensor) -> Tensor:
+    decoded_pbr, target_pbr = _compute_pbr_target_and_pred_importance_sample(decoded_textures, target_textures)
+
+    return (decoded_pbr - target_pbr).abs().mean()
+
 def _compute_pbr_loss_l1(decoded_textures: Tensor, target_textures: Tensor) -> Tensor:
     decoded_pbr, target_pbr = _compute_pbr_target_and_pred(decoded_textures, target_textures)
+    decoded_pbr = brdf.pbr_log_tone_mapping(decoded_pbr)
+    target_pbr = brdf.pbr_log_tone_mapping(target_pbr)
 
     return (decoded_pbr - target_pbr).abs().mean()
 
 def _compute_pbr_loss_l1_lpips(decoded_textures: Tensor, target_textures: Tensor) -> Tensor:
     decoded_pbr, target_pbr = _compute_pbr_target_and_pred(decoded_textures, target_textures)
-    decoded_pbr = brdf.pbr_neutral_tone_mapping(decoded_pbr, 1)
-    target_pbr = brdf.pbr_neutral_tone_mapping(target_pbr, 1)
+    decoded_pbr = brdf.pbr_neutral_tone_mapping(decoded_pbr, -1)
+    target_pbr = brdf.pbr_neutral_tone_mapping(target_pbr, -1)
 
     if decoded_textures.device != _compute_pbr_loss_l1_lpips.lpips.device:
         _compute_pbr_loss_l1_lpips.lpips = _compute_pbr_loss_l1_lpips.lpips.to(device=decoded_textures.device)
 
     _compute_pbr_loss_l1_lpips.lpips.reset()
-    return _compute_pbr_loss_l1_lpips.lpips(decoded_pbr, target_pbr) * 0.5 + (decoded_pbr - target_pbr).abs().mean()
+    return _compute_pbr_loss_l1_lpips.lpips(decoded_pbr.permute(0, 3, 1, 2), target_pbr.permute(0, 3, 1, 2)) * 0.5 + (decoded_pbr - target_pbr).abs().mean()
 _compute_pbr_loss_l1_lpips.lpips = LearnedPerceptualImagePatchSimilarity(net_type="vgg", normalize=True)
 
 
@@ -377,6 +469,8 @@ def loss_function(
             cur_dist = _compute_pbr_loss_l1_lpips(decoded_image, target_image)
         elif dist_name == "brdf_rel_mse":
             cur_dist = _compute_pbr_loss_relative_mse(decoded_image, target_image)
+        elif dist_name == "brdf_l1_importance_sampling":
+            cur_dist = _compute_pbr_loss_l1_importance_sampling(decoded_image, target_image)
         else:
             raise ValueError(
                 f"Unsupported distortion metrics. Found {dist_name}, available "
