@@ -5,6 +5,32 @@ import torch
 # https://holger.dammertz.org/stuff/notes_HammersleyOnHemisphere.html
 # https://learnopengl.com/PBR/IBL/Specular-IBL
 
+def radical_inverse_torch(bits: torch.Tensor):
+    bits = bits.to(dtype=torch.int32)
+
+    bits = torch.bitwise_or(
+        torch.bitwise_left_shift(bits, 16), torch.bitwise_right_shift(bits, 16)
+    )
+    bits = torch.bitwise_or(
+        torch.bitwise_left_shift(torch.bitwise_and(bits, 0x55555555), 1),
+        torch.bitwise_right_shift(torch.bitwise_and(bits, 0xAAAAAAAA), 1),
+    )
+    bits = torch.bitwise_or(
+        torch.bitwise_left_shift(torch.bitwise_and(bits, 0x33333333), 2),
+        torch.bitwise_right_shift(torch.bitwise_and(bits, 0xCCCCCCCC), 2),
+    )
+    bits = torch.bitwise_or(
+        torch.bitwise_left_shift(torch.bitwise_and(bits, 0x0F0F0F0F), 4),
+        torch.bitwise_right_shift(torch.bitwise_and(bits, 0xF0F0F0F0), 4),
+    )
+    bits = torch.bitwise_or(
+        torch.bitwise_left_shift(torch.bitwise_and(bits, 0x00FF00FF), 8),
+        torch.bitwise_right_shift(torch.bitwise_and(bits, 0xFF00FF00), 8),
+    )
+    bits = bits.to(dtype=torch.uint32)
+
+    bits = bits.float() * 2.3283064365386963e-10
+    return bits
 
 def van_der_corput(n, base):
     inv_base = 1.0 / base
@@ -41,7 +67,7 @@ def hammersley2d(i, N):
 
 
 def hammersley2d_torch(i, N):
-    return i / N, van_der_corput_torch(i, 2)
+    return i / N, radical_inverse_torch(i)
 
 
 def sample_hemisphere_uniform(u, v):
