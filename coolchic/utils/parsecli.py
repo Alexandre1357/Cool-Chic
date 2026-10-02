@@ -369,10 +369,10 @@ def get_preset_from_args(args: argparse.Namespace) -> Dict[str, Any]:
         dist_weight = {"mse": 0.1, "brdf_mod_mse": 0.9}
 
     elif args.tune == "brdf07_l1_log":
-        dist_weight = {"mse": 0.3, "brdf_l1": 0.7}
+        dist_weight = {"mse": 0.3, "brdf_l1_log": 0.7}
 
     elif args.tune == "brdf09_l1_log":
-        dist_weight = {"mse": 0.1, "brdf_l1": 0.9}
+        dist_weight = {"mse": 0.1, "brdf_l1_log": 0.9}
 
     elif args.tune == "brdf07_l1_lpips":
         dist_weight = {"mse": 0.3, "brdf_l1_lpips": 0.7}

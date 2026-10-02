@@ -395,8 +395,6 @@ def _compute_pbr_target_and_pred_importance_sample(
             apply_shading=True,
             pdf=pdf,
         )
-        .reshape(num_samples * B, H, W, 3)
-        .permute(0, 3, 1, 2)
     )
     target_pbr = (
         brdf.calc_pbr(
@@ -409,15 +407,13 @@ def _compute_pbr_target_and_pred_importance_sample(
             apply_shading=True,
             pdf=pdf,
         )
-        .reshape(num_samples * B, H, W, 3)
-        .permute(0, 3, 1, 2)
     )
 
     light_below = torch.sum(target_normals * light_dir, dim=-1, keepdim=True) <= 0
     eye_below = torch.sum(target_normals * eye_dir, dim=-1, keepdim=True) <= 0
 
-    decoded_pbr = torch.where(torch.logical_or(light_below, eye_below), 0, decoded_pbr)
-    target_pbr = torch.where(torch.logical_or(light_below, eye_below), 0, target_pbr)
+    decoded_pbr = torch.where(torch.logical_or(light_below, eye_below), 0, decoded_pbr).reshape(num_samples*B, H, W, 3).permute(0, 3, 1, 2)
+    target_pbr = torch.where(torch.logical_or(light_below, eye_below), 0, target_pbr).reshape(num_samples*B, H, W, 3).permute(0, 3, 1, 2)
 
     return decoded_pbr, target_pbr
 
@@ -463,16 +459,16 @@ def _compute_pbr_target_and_pred(
         decoded_rough,
         decoded_metal,
         decoded_normals,
-    ).reshape(num_samples * B, H, W, 3)
+    )
     target_pbr = brdf.calc_pbr(
         light_dir, eye_dir, target_diffuse, target_rough, target_metal, target_normals
-    ).reshape(num_samples * B, H, W, 3)
+    )
 
     light_below = torch.sum(target_normals * light_dir, dim=-1, keepdim=True) <= 0
     eye_below = torch.sum(target_normals * eye_dir, dim=-1, keepdim=True) <= 0
 
-    decoded_pbr = torch.where(torch.logical_or(light_below, eye_below), 0, decoded_pbr)
-    target_pbr = torch.where(torch.logical_or(light_below, eye_below), 0, target_pbr)
+    decoded_pbr = torch.where(torch.logical_or(light_below, eye_below), 0, decoded_pbr).reshape(num_samples*B, H, W, 3).permute(0, 3, 1, 2)
+    target_pbr = torch.where(torch.logical_or(light_below, eye_below), 0, target_pbr).reshape(num_samples*B, H, W, 3).permute(0, 3, 1, 2)
 
     return decoded_pbr, target_pbr
 
