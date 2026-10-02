@@ -26,11 +26,12 @@ DISTORTION_METRIC = Literal[
     "wasserstein",
     "brdf07_mod_mse",
     "brdf09_mod_mse",
-    "brdf07_l1",
-    "brdf09_l1",
+    "brdf07_l1_log",
+    "brdf09_l1_log",
     "brdf07_l1_lpips",
     "brdf07_rel_mse",
     "brdf07_l1_importance_sampling",
+    "brdf_l1_importance_sampling",
 ]
 
 
@@ -614,7 +615,7 @@ def loss_function(
             cur_dist = _compute_wasserstein(decoded_image, target_image)
         elif dist_name == "brdf_mod_mse":
             cur_dist = _compute_brdf_mod_mse(decoded_image, target_image)
-        elif dist_name == "brdf_l1":
+        elif dist_name == "brdf_l1_log":
             cur_dist = _compute_pbr_loss_l1(decoded_image, target_image)
         elif dist_name == "brdf_l1_lpips":
             cur_dist = _compute_pbr_loss_l1_lpips(decoded_image, target_image)
