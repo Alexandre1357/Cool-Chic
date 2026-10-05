@@ -482,7 +482,7 @@ def _compute_pbr_loss_relative_mse(
     decoded_textures: Tensor, target_textures: Tensor
 ) -> Tensor:
     decoded_pbr, target_pbr = _compute_pbr_target_and_pred(
-        decoded_textures, target_textures
+        decoded_textures, target_textures, 32
     )
 
     se = (target_pbr - decoded_pbr).square()
@@ -497,7 +497,7 @@ def _compute_pbr_loss_l1_importance_sampling(
     decoded_textures: Tensor, target_textures: Tensor
 ) -> Tensor:
     decoded_pbr, target_pbr = _compute_pbr_target_and_pred_importance_sample(
-        decoded_textures, target_textures
+        decoded_textures, target_textures, 32
     )
 
     return (decoded_pbr - target_pbr).abs().mean()
@@ -506,7 +506,7 @@ def _compute_pbr_loss_l1_log_importance_sampling(
     decoded_textures: Tensor, target_textures: Tensor
 ) -> Tensor:
     decoded_pbr, target_pbr = _compute_pbr_target_and_pred_importance_sample(
-        decoded_textures, target_textures
+        decoded_textures, target_textures, 32
     )
     decoded_pbr = brdf.pbr_log_tone_mapping(decoded_pbr)
     target_pbr = brdf.pbr_log_tone_mapping(target_pbr)
@@ -516,7 +516,7 @@ def _compute_pbr_loss_l1_log_importance_sampling(
 
 def _compute_pbr_loss_l1(decoded_textures: Tensor, target_textures: Tensor) -> Tensor:
     decoded_pbr, target_pbr = _compute_pbr_target_and_pred(
-        decoded_textures, target_textures
+        decoded_textures, target_textures, 32
     )
 
     return (decoded_pbr - target_pbr).abs().mean()
@@ -524,7 +524,7 @@ def _compute_pbr_loss_l1(decoded_textures: Tensor, target_textures: Tensor) -> T
 
 def _compute_pbr_loss_l1_log(decoded_textures: Tensor, target_textures: Tensor) -> Tensor:
     decoded_pbr, target_pbr = _compute_pbr_target_and_pred(
-        decoded_textures, target_textures
+        decoded_textures, target_textures, 32
     )
     decoded_pbr = brdf.pbr_log_tone_mapping(decoded_pbr)
     target_pbr = brdf.pbr_log_tone_mapping(target_pbr)
