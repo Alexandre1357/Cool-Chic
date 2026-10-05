@@ -368,6 +368,15 @@ def get_preset_from_args(args: argparse.Namespace) -> Dict[str, Any]:
     elif args.tune == "brdf09_mod_mse":
         dist_weight = {"mse": 0.1, "brdf_mod_mse": 0.9}
 
+    elif args.tune == "brdf_l1":
+        dist_weight = {"mse": 1.0, "brdf_l1": 1.0}
+
+    elif args.tune == "brdf_l1_log":
+        dist_weight = {"mse": 1.0, "brdf_l1_log": 1.0}
+
+    elif args.tune == "brdf07_l1":
+        dist_weight = {"mse": 0.3, "brdf_l1": 0.7}
+
     elif args.tune == "brdf07_l1_log":
         dist_weight = {"mse": 0.3, "brdf_l1_log": 0.7}
 
@@ -380,11 +389,17 @@ def get_preset_from_args(args: argparse.Namespace) -> Dict[str, Any]:
     elif args.tune == "brdf07_rel_mse":
         dist_weight = {"mse": 0.3, "brdf_rel_mse": 0.7}
 
+    elif args.tune == "brdf_l1_importance_sampling":
+        dist_weight = {"mse": 1.0, "brdf_l1_importance_sampling": 1.0}
+
     elif args.tune == "brdf07_l1_importance_sampling":
         dist_weight = {"mse": 0.3, "brdf_l1_importance_sampling": 0.7}
 
-    elif args.tune == "brdf_l1_importance_sampling":
-        dist_weight = {"mse": 1.0, "brdf_l1_importance_sampling": 1.0}
+    elif args.tune == "brdf_l1_log_importance_sampling":
+        dist_weight = {"mse": 1.0, "brdf_l1_log_importance_sampling": 1.0}
+
+    elif args.tune == "brdf07_l1_log_importance_sampling":
+        dist_weight = {"mse": 0.3, "brdf_l1_log_importance_sampling": 0.7}
 
     else:
         raise argparse.ArgumentTypeError(f"Unknown --tune. Found {args.tune}")

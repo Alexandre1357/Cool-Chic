@@ -26,12 +26,17 @@ DISTORTION_METRIC = Literal[
     "wasserstein",
     "brdf07_mod_mse",
     "brdf09_mod_mse",
+    "brdf_l1",
+    "brdf07_l1",
+    "brdf_l1_log",
     "brdf07_l1_log",
     "brdf09_l1_log",
     "brdf07_l1_lpips",
     "brdf07_rel_mse",
-    "brdf07_l1_importance_sampling",
     "brdf_l1_importance_sampling",
+    "brdf07_l1_importance_sampling",
+    "brdf_l1_log_importance_sampling",
+    "brdf07_l1_log_importance_sampling",
 ]
 
 
@@ -497,8 +502,27 @@ def _compute_pbr_loss_l1_importance_sampling(
 
     return (decoded_pbr - target_pbr).abs().mean()
 
+def _compute_pbr_loss_l1_log_importance_sampling(
+    decoded_textures: Tensor, target_textures: Tensor
+) -> Tensor:
+    decoded_pbr, target_pbr = _compute_pbr_target_and_pred_importance_sample(
+        decoded_textures, target_textures
+    )
+    decoded_pbr = brdf.pbr_log_tone_mapping(decoded_pbr)
+    target_pbr = brdf.pbr_log_tone_mapping(target_pbr)
+
+    return (decoded_pbr - target_pbr).abs().mean()
+
 
 def _compute_pbr_loss_l1(decoded_textures: Tensor, target_textures: Tensor) -> Tensor:
+    decoded_pbr, target_pbr = _compute_pbr_target_and_pred(
+        decoded_textures, target_textures
+    )
+
+    return (decoded_pbr - target_pbr).abs().mean()
+
+
+def _compute_pbr_loss_l1_log(decoded_textures: Tensor, target_textures: Tensor) -> Tensor:
     decoded_pbr, target_pbr = _compute_pbr_target_and_pred(
         decoded_textures, target_textures
     )
@@ -611,14 +635,20 @@ def loss_function(
             cur_dist = _compute_wasserstein(decoded_image, target_image)
         elif dist_name == "brdf_mod_mse":
             cur_dist = _compute_brdf_mod_mse(decoded_image, target_image)
-        elif dist_name == "brdf_l1_log":
+        elif dist_name == "brdf_l1":
             cur_dist = _compute_pbr_loss_l1(decoded_image, target_image)
+        elif dist_name == "brdf_l1_log":
+            cur_dist = _compute_pbr_loss_l1_log(decoded_image, target_image)
         elif dist_name == "brdf_l1_lpips":
             cur_dist = _compute_pbr_loss_l1_lpips(decoded_image, target_image)
         elif dist_name == "brdf_rel_mse":
             cur_dist = _compute_pbr_loss_relative_mse(decoded_image, target_image)
         elif dist_name == "brdf_l1_importance_sampling":
             cur_dist = _compute_pbr_loss_l1_importance_sampling(
+                decoded_image, target_image
+            )
+        elif dist_name == "brdf_l1_log_importance_sampling":
+            cur_dist = _compute_pbr_loss_l1_log_importance_sampling(
                 decoded_image, target_image
             )
         else:
